@@ -1,1 +1,7 @@
-
+{
+  "name": "ds-emu",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build-single-file.mjs"
+  }
+}
