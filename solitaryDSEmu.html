@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DS Emulator - Offline Edition</title>
+  <style>
+    /* 1. PASTE ENTIRE src/styles.css CONTENT BELOW THIS LINE */
+    body { background: #121212; color: #fff; font-family: sans-serif; text-align: center; margin: 0; padding: 20px; }
+    #screenCanvas { max-width: 100%; background: #000; border: 4px solid #333; display: block; margin: 0 auto; }
+    #statusText { padding: 10px; color: #aaa; }
+  </style>
+</head>
+<body>
+
+  <!-- Your UI Elements (Keep these above the scripts so app.js can find them) -->
+  <div id="statusText">Initializing Core...</div>
+  <canvas id="screenCanvas"></canvas>
+
+  <script>
+    /* 2. PASTE ENTIRE pilas-melonds-core.js CONTENT BELOW THIS LINE */
+    /* CRITICAL STEP: Go to the very last line of that script, delete "export default createPilasMelonDSModule;" */
+    /* and replace it with: */
+    // globalThis.createPilasMelonDSModule = createPilasMelonDSModule;
+  </script>
+
+  <script>
+    // 3. BASE64 DECODER UTILITY
+    function decodeBase64(base64) {
+      const clean = base64.replace(/\s/g, "");
+      const binary = atob(clean);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    // 4. DATA STORE STRINGS - Paste your giant text walls here
+    const WASM_BASE64_DATA = "PASTE_YOUR_REAL_WASM_BASE64_STRING_HERE";
+    const ROM_BASE64_DATA = "PASTE_YOUR_REAL_ROM_BASE64_STRING_HERE";
+
+    // Decode strings directly into RAM arrays at boot
+    const embeddedWasmBinary = decodeBase64(WASM_BASE64_DATA);
+    const embeddedRomBytes = decodeBase64(ROM_BASE64_DATA);
+
+    // 5. INLINE AUDIO WORKLET BLOB GENERATOR
+    const audioWorkletCode = `
+    class PilasAudioWorklet extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.queue = [];
+        this.current = null;
+        this.offset = 0;
+        this.port.onmessage = (e) => {
+          if (e.data?.type === "samples" && e.data.samples) {
+            this.queue.push(e.data.samples);
+          }
+        };
+      }
+      nextSample(channel) {
+        if (!this.current || this.offset >= this.current.length) {
+          this.current = this.queue.shift() || null;
+          this.offset = 0;
+        }
+        if (!this.current) return 0;
+        return this.current[this.offset + channel] || 0;
+      }
+      process(_, outputs) {
+        const output = outputs[0];
+        const left = output[0];
+        const right = output[1] || output[0];
+        for (let i = 0; i < left.length; i++) {
+          left[i] = this.nextSample(0);
+          right[i] = this.nextSample(1);
+          this.offset += 2;
+        }
+        return true;
+      }
+    }
+    registerProcessor("pilas-audio-worklet", PilasAudioWorklet);
+    `;
+
+    const workletBlob = new Blob([audioWorkletCode], { type: "application/javascript" });
+    const embeddedAudioWorkletUrl = URL.createObjectURL(workletBlob);
+
+    // 6. EMSCRIPTEN HANDSHAKE & INTERCEPT LOGIC
+    async function createEmbeddedCore() {
+      if (typeof createPilasMelonDSModule !== "function") {
+        throw new Error("Embedded melonDS core factory is missing from script tag 1.");
+      }
+
+      // Force Emscripten to bypass network fetch and consume the RAM bytes directly
+      return createPilasMelonDSModule({
+        wasmBinary: embeddedWasmBinary,
+        instantiateWasm: function(imports, receiveInstance) {
+          WebAssembly.instantiate(embeddedWasmBinary, imports).then(function(output) {
+            receiveInstance(output.instance, output.module);
+          });
+          return {}; // Tells Emscripten the instantiation process is running asynchronously
+        }
+      });
+    }
+
+    // 7. PASTE ENTIRE src/app.js CONTENT BELOW THIS LINE AND APPLY THESE TWO CHANGES:
+    // Change A: Inside AudioEngine.start(), look for .addModule("./src/audio-worklet.js") and swap with:
+    // await this.context.audioWorklet.addModule(embeddedAudioWorkletUrl);
+    
+    // Change B: Inside your startup boot routine, block the old import and trigger our RAM override:
+    /* 
+    async function bootCore() {
+      try {
+        Module = await createEmbeddedCore();
+        await initStorage();
+        // Force-load our RAM ROM array directly
+        await loadRomBytes(embeddedRomBytes, "embedded-game.nds");
+      } catch(err) {
+        console.error(err);
+      }
+    }
+    */
+    
+    function setStatus(msg) {
+      document.getElementById("statusText").innerText = msg;
+    }
+  </script>
+</body>
+</html>
